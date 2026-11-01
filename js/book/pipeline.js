@@ -70,6 +70,66 @@ export function describeContentError(text, { pageText = '' } = {}) {
     return '';
 }
 
+/** 章节标题里的序号：「第12章」「第 12 节」「12. 标题」「（12）」都认；认不出返回 0 */
+export function chapterOrdinal(title) {
+    const text = String(title ?? '').trim();
+    if (!text) return 0;
+    const numbered = text.match(/第\s*(\d{1,6})\s*[章节回]/);
+    if (numbered) return Number(numbered[1]) || 0;
+    const prefixed = text.match(/^[（(【\[]?\s*(\d{1,6})\s*[)）】\]]?\s*[.、,，:：\-—]\s*\S/);
+    if (prefixed) return Number(prefixed[1]) || 0;
+    return 0;
+}
+
+/** 序号序列（0 = 认不出）是否从头到尾不往回退 */
+function isAscending(numbers) {
+    let previous = 0;
+    for (const value of numbers) {
+        if (!value) continue;
+        if (value < previous) return false;
+        previous = value;
+    }
+    return true;
+}
+
+/**
+ * 把「猜」出来的目录按章节序号摆正（只调顺序，不增删）。
+ *
+ * 猜目录只认「同一 URL 模板、成批出现的链接」，拿到的顺序就是 DOM 顺序，
+ * 而真实页面有两种很常见的坑：
+ *   1. 页首要放一块「最新章节」，它和正文目录里最后十几章是同一批链接；
+ *   2. 正文目录本身按「最新在前」倒序排。
+ * 两种都会让第一屏从第 130 章 / 第 1300 章开始，看着像是从书中间打开。
+ *
+ * 只在「按序号重排后整串序号严格不回退」时才动；认不出序号的书保持原样，
+ * 分卷重新编号（多处回退）也不会被乱翻。
+ * @returns {{chapters:object[], changed:boolean, reason:string}}
+ */
+export function normalizeChapterOrder(chapters) {
+    const list = Array.isArray(chapters) ? chapters.slice() : [];
+    const unchanged = { chapters: list, changed: false, reason: '' };
+    if (list.length < 10) return unchanged;
+    const numbersOf = items => items.map(item => chapterOrdinal(item?.title));
+    const numbers = numbersOf(list);
+    const known = numbers.filter(Boolean).length;
+    // 序号覆盖率太低（卷名、书名号标题混排）就别猜顺序了
+    if (known < 6 || known < Math.ceil(list.length * 0.6)) return unchanged;
+    if (isAscending(numbers)) return unchanged;
+    // 整本倒序
+    const reversed = list.slice().reverse();
+    if (isAscending(numbersOf(reversed))) return { chapters: reversed, changed: true, reason: '目录本身是倒序的' };
+    // 页首「最新章节」排到了正文目录前面：整串只有一个「回退」，在那一处转一圈就正了
+    const drops = [];
+    for (let i = 1; i < numbers.length; i++) {
+        if (numbers[i] && numbers[i - 1] && numbers[i] < numbers[i - 1]) drops.push(i);
+    }
+    if (drops.length === 1) {
+        const rotated = list.slice(drops[0]).concat(list.slice(0, drops[0]));
+        if (isAscending(numbersOf(rotated))) return { chapters: rotated, changed: true, reason: '页首「最新章节」和正文目录重复' };
+    }
+    return unchanged;
+}
+
 export class BookPipeline {
     constructor({ client, onWarning = null, jsRunner = null, onTrace = null, fetchBase = '' } = {}) {
         if (!client) throw new Error('BookPipeline 需要 NetClient');
@@ -371,8 +431,10 @@ export class BookPipeline {
      * 数一数哪种模板出现得最多 —— 章节列表一定是「同一模板、几百条」，
      * 而导航、推荐位、分页条都只有零星几条。
      *
+     * 顺序：去重保留最后一次出现（页首「最新章节」块不抢位），再按标题序号兜一次底。
+     *
      * @returns {{chapters:object[], tocUrl:string, pages:number, guessed:true,
-     *            pattern:string, linkCount:number, reason:string}}
+     *            pattern:string, linkCount:number, reason:string, reordered:boolean}}
      */
     async tocGuess(source, book, { signal = null, minCount = 20, url = '' } = {}) {
         const target = url || book?.tocUrl || book?.bookUrl;
@@ -422,23 +484,34 @@ export class BookPipeline {
                 reason: `页面里有 ${anchors.length} 个链接，但最多只有 ${bestCount} 个是同一类章节地址`,
             };
         }
+        // 同一批链接常出现两次（页首「最新章节」块 + 正文目录），去重时保留**最后一次**出现：
+        // 保住的才是完整目录那条，页首那十几章的「预览块」会被丢掉。保留第一次的话，
+        // 目录会从「第 130 章」开始，读起来就像这本书从中间开了头。
         const seen = new Set();
         const chapters = [];
-        for (const item of candidates) {
+        for (let i = candidates.length - 1; i >= 0; i--) {
+            const item = candidates[i];
             if (item.pattern !== best) continue;
-            const key = item.url;
-            if (seen.has(key)) continue;
-            seen.add(key);
-            chapters.push({ title: item.title.slice(0, 160), url: item.url, isVolume: false, isVip: false, isPay: false, tag: '', index: chapters.length });
+            if (seen.has(item.url)) continue;
+            seen.add(item.url);
+            chapters.push({ title: item.title.slice(0, 160), url: item.url, isVolume: false, isVip: false, isPay: false, tag: '' });
         }
+        chapters.reverse();
+        // 顺序还是不对（整本倒序 / 页首块没去干净）：按标题序号再摆一次
+        const ordered = normalizeChapterOrder(chapters);
+        if (ordered.changed) this.warn(`猜出来的目录顺序不对（${ordered.reason}），已按章节序号重排`);
+        ordered.chapters.forEach((chapter, index) => {
+            chapter.index = index;
+        });
         return {
-            chapters,
+            chapters: ordered.chapters,
             tocUrl: target,
             pages: 1,
             guessed: true,
             pattern: best,
             linkCount: anchors.length,
             reason: '',
+            reordered: ordered.changed,
         };
     }
 

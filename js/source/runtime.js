@@ -304,6 +304,7 @@ export class SourceRuntime {
                 tocGuessed = true;
                 tocResult = guess;
                 this.warnings.push(`目录规则没命中，已按页面结构推断出 ${guess.chapters.length} 章（模板 ${guess.pattern}），建议检查这个书源的「目录列表」规则`);
+                if (guess.reordered) this.warnings.push(`推断出的目录顺序不对（${guess.reason || '页面倒序 / 页首「最新章节」重复'}），已按章节序号重排`);
             } else {
                 const why = tocError ? `规则报错：${tocError.message}` : (guess.reason || '页面里没有成批的章节链接');
                 throw new Error(`没解析到章节：书源规则可能不匹配这个站点（${why}）`);
@@ -326,6 +327,7 @@ export class SourceRuntime {
                 ...current,
                 name: applyReplaceRules(current.name, rules, 'title'),
                 tocGuessed: Boolean(tocGuessed),
+                tocReordered: Boolean(tocResult.reordered),
             },
             chapters,
         };
@@ -349,6 +351,7 @@ export class SourceRuntime {
             sourceName: source.bookSourceName,
             tocUrl: result.book.tocUrl || result.book.bookUrl,
             tocGuessed: Boolean(result.book.tocGuessed),
+            tocReordered: Boolean(result.book.tocReordered),
             chapters: result.chapters.map(chapter => ({
                 title: chapter.title,
                 url: chapter.url,

@@ -6514,7 +6514,8 @@ async function openOnlineBookUrl(url) {
                 : `《${book.title}》· ${book.chapters.length} 章 · 这个链接没匹配到书源：点「下载到书架」抓全后就能读`;
         // 目录规则没命中、靠页面结构猜出来的：说清楚，免得以为是规则跑通了
         if (book.tocGuessed) {
-            toast(`这个站点的目录规则没命中，已按页面结构推断出 ${book.chapters.length} 章；如果章节顺序不对，去书源管理改「目录列表」规则`, 'warning');
+            const order = book.tocReordered ? '（页面是倒序 / 页首「最新章节」和目录重复，已按章节序号重排）' : '';
+            toast(`这个站点的目录规则没命中，已按页面结构推断出 ${book.chapters.length} 章${order}；如果章节顺序不对，去书源管理改「目录列表」规则`, 'warning');
         }
         // 搜索仍在继续时，状态栏继续报告搜索进度，别把「还在搜」的提示冲掉
         if (state.online.searching) {

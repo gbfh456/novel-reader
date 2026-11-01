@@ -9,7 +9,7 @@ import { createRuleContext, getElements, getString, getStringList, replaceText }
 import { queryJsonPath } from '../js/rule/jsonpath.js';
 import { buildRequest, applyUrlTemplate, splitUrlOption } from '../js/net/url.js';
 import { importSources, exportSource, normalizeSource, validateSource, splitSourceGroups, sourceNeedsJs } from '../js/source/model.js';
-import { BookPipeline } from '../js/book/pipeline.js';
+import { BookPipeline, normalizeChapterOrder } from '../js/book/pipeline.js';
 import { htmlToText, normalizeParagraphs, rebuildParagraphs } from '../js/book/text.js';
 import { parseConcurrentRate } from '../js/net/client.js';
 import { SourceRuntime, alignChapterIndex, normalizeBookName } from '../js/source/runtime.js';
@@ -718,6 +718,69 @@ await test('目录兜底：规则没命中时按页面结构猜出章节', async
     assert.equal(res.chapters.some(item => /首页|玄幻|排行榜|加入书架/.test(item.title)), false);
 });
 
+/* 真实详情页常见的两种坑：页首再放一块「最新章节」；正文目录本身倒序 */
+const GUESS_WITH_LATEST = (() => {
+    const total = 40;
+    const item = i => `<dd><a href="/guimizhizhu/${99 + i}.html">第${i}章 标题</a></dd>`;
+    const latest = Array.from({ length: 6 }, (_, i) => item(total - 5 + i)).join('');
+    const all = Array.from({ length: total }, (_, i) => item(i + 1)).join('');
+    return `<html><body><div class="hot"><dl><dt>最新章节</dt>${latest}</dl></div>`
+        + `<div class="listmain"><dl><dt>正文卷</dt>${all}</dl></div></body></html>`;
+})();
+
+const GUESS_DESC_PAGE = (() => {
+    const total = 40;
+    const all = Array.from({ length: total }, (_, i) => {
+        const n = total - i;
+        return `<dd><a href="/guimizhizhu/${99 + n}.html">第${n}章 标题</a></dd>`;
+    }).join('');
+    return `<html><body><div class="listmain"><dl>${all}</dl></div></body></html>`;
+})();
+
+await test('目录兜底：页首「最新章节」块不会把开头换成第 35 章', async () => {
+    const client = {
+        requestWithRetry: async request => ({ text: GUESS_WITH_LATEST, finalUrl: request.url, status: 200, headers: {} }),
+    };
+    const pipeline = new BookPipeline({ client });
+    const res = await pipeline.tocGuess({ bookSourceUrl: 'https://g.test', ruleToc: {} }, { bookUrl: 'https://g.test/guimizhizhu/' });
+    assert.equal(res.chapters.length, 40);
+    assert.equal(res.chapters[0].title, '第1章 标题');
+    assert.equal(res.chapters.at(-1).title, '第40章 标题');
+    assert.deepEqual(res.chapters.map(item => item.index), Array.from({ length: 40 }, (_, i) => i));
+});
+
+await test('目录兜底：整本倒序的目录会翻正', async () => {
+    const client = {
+        requestWithRetry: async request => ({ text: GUESS_DESC_PAGE, finalUrl: request.url, status: 200, headers: {} }),
+    };
+    const pipeline = new BookPipeline({ client, onWarning: () => {} });
+    const res = await pipeline.tocGuess({ bookSourceUrl: 'https://g.test', ruleToc: {} }, { bookUrl: 'https://g.test/guimizhizhu/' });
+    assert.equal(res.chapters.length, 40);
+    assert.equal(res.chapters[0].title, '第1章 标题');
+    assert.equal(res.reordered, true);
+    assert.equal(res.chapters.at(-1).title, '第40章 标题');
+});
+
+await test('目录排序：页首重复的最后几章会被转到末尾', () => {
+    const list = Array.from({ length: 40 }, (_, i) => ({ title: `第${i + 1}章 标题` }));
+    const rotated = list.slice(34).concat(list.slice(0, 34));
+    const res = normalizeChapterOrder(rotated);
+    assert.equal(res.changed, true);
+    assert.equal(res.chapters[0].title, '第1章 标题');
+    assert.equal(res.chapters.at(-1).title, '第40章 标题');
+});
+
+await test('目录排序：认不出序号 / 分卷重新编号的书不动', () => {
+    const plain = [{ title: '楔子' }, { title: '少年' }, { title: '远行' }];
+    assert.equal(normalizeChapterOrder(plain).changed, false);
+    // 分卷各自从第 1 章开始：多处回退，不能乱翻
+    const volumes = [];
+    for (let volume = 0; volume < 3; volume++) {
+        for (let i = 1; i <= 20; i++) volumes.push({ title: `第${i}章 标题` });
+    }
+    assert.equal(normalizeChapterOrder(volumes).changed, false);
+});
+
 await test('运行时：目录规则没命中时自动猜目录，并标记 tocGuessed', async () => {
     const client = {
         requestWithRetry: async request => ({ text: GUESS_PAGE, finalUrl: request.url, status: 200, headers: {} }),
@@ -735,6 +798,25 @@ await test('运行时：目录规则没命中时自动猜目录，并标记 tocG
     assert.equal(result.chapters.length, 40);
     assert.equal(result.book.tocGuessed, true);
     assert.match(result.chapters[0].url, /100\.html$/);
+});
+
+await test('运行时：目录被重排时 openBook 带上 tocReordered', async () => {
+    const client = {
+        requestWithRetry: async request => ({ text: GUESS_DESC_PAGE, finalUrl: request.url, status: 200, headers: {} }),
+        setRateLimit() {},
+    };
+    const source = normalizeSource({
+        bookSourceName: '倒序源',
+        bookSourceUrl: 'https://g.test',
+        ruleToc: { chapterList: '#nope', chapterName: 'tag.a@text', chapterUrl: 'tag.a@href' },
+        ruleContent: { content: '#content@html' },
+    });
+    const runtime = new SourceRuntime({ client, settings: { sources: [source], channel: 'auto', timeoutMs: 15000 } });
+    const book = await runtime.openBook('https://g.test/guimizhizhu/');
+    assert.equal(book.tocGuessed, true);
+    assert.equal(book.tocReordered, true);
+    assert.equal(book.chapters[0].title, '第1章 标题');
+    assert.equal(book.chapters.at(-1).title, '第40章 标题');
 });
 
 await test('运行时：桥接 ping', async () => {
