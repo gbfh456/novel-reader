@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>小说阅读器 · 浏览器自检台</title>
+<link rel="stylesheet" href="../style.css">
+<style>
+    body {
+        margin: 0;
+        min-height: 100vh;
+        background: #1b1d22;
+        color: #ddd;
+        font-family: system-ui, sans-serif;
+        /* 模拟酒馆深色主题的变量，方便检查阅读主题的对比度 */
+        --SmartThemeBodyColor: #dddddd;
+        --SmartThemeQuoteColor: #c8a2ff;
+        --SmartThemeBlurTintColor: #22242a;
+        --SmartThemeBorderColor: #444444;
+    }
+    #harness-note { padding: 16px 20px; color: #9aa; font-size: 13px; line-height: 1.7; }
+    #harness-log { padding: 0 20px 24px; font: 12px/1.6 ui-monospace, monospace; color: #9fd; white-space: pre-wrap; }
+    /* 无头 Chromium 的软件合成器在 backdrop-filter 大面板上会崩，测试台里关掉 */
+    #nr-panel, #nr-panel * { backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }
+    #nr-panel .nr-shelf-bar { position: static !important; }
+</style>
+</head>
+<body>
+<div id="harness-note">
+    浏览器自检台：用桩替 SillyTavern 上下文，加载真实 <code>js/ui.js</code>，可以点悬浮球、验证书架 / 找书 / 阅读 / 书源管理。
+    控制台对象：<code>window.NovelReader</code>。
+</div>
+<pre id="harness-log"></pre>
+<script>
+    (() => {
+        const log = (...args) => {
+            const line = args.map(item => (typeof item === 'string' ? item : JSON.stringify(item))).join(' ');
+            document.getElementById('harness-log').textContent += line + '\n';
+            console.log('[harness]', ...args);
+        };
+        const listeners = new Map();
+        const context = {
+            extensionSettings: {},
+            saveSettingsDebounced() {},
+            getRequestHeaders() { return { 'Content-Type': 'application/json' }; },
+            eventSource: {
+                on(event, handler) { listeners.set(event, handler); },
+                removeListener(event) { listeners.delete(event); },
+                emit(event, ...args) { listeners.get(event)?.(...args); },
+            },
+            eventTypes: {
+                OAI_PRESET_CHANGED_AFTER: 'oai_preset_changed_after',
+                PRESET_CHANGED: 'preset_changed',
+                CHATCOMPLETION_SOURCE_CHANGED: 'chatcompletion_source_changed',
+                CHARACTER_EDITOR_OPENED: 'character_editor_opened',
+            },
+            characters: [],
+            characterId: 0,
+            chat: [],
+            chatId: 'harness',
+            maxContext: 8192,
+            name1: 'User',
+            name2: 'Assistant',
+            callGenericPopup: async () => 1,
+            POPUP_TYPE: { CONFIRM: 1, INPUT: 2, DISPLAY: 3 },
+            POPUP_RESULT: { AFFIRMATIVE: 1, NEGATIVE: 0 },
+            generate: async () => '',
+            generateQuietPrompt: async () => '',
+        };
+        window.__harnessContext = context;
+        window.SillyTavern = { getContext: () => context, libs: {} };
+        window.addEventListener('error', event => log('window error:', event.message));
+        window.addEventListener('unhandledrejection', event => log('unhandled rejection:', String(event.reason?.message || event.reason)));
+        window.__harnessLog = log;
+    })();
+</script>
+<script type="module">
+    import { initUI } from '../js/ui.js';
+    try {
+        await initUI();
+        window.__harnessReady = true;
+        window.__harnessLog('initUI 完成');
+    } catch (error) {
+        window.__harnessLog('initUI 失败:', error?.stack || String(error));
+        window.__harnessError = String(error?.message || error);
+    }
+</script>
+</body>
+</html>

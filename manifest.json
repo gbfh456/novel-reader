@@ -1,0 +1,12 @@
+{
+    "display_name": "小说阅读器",
+    "loading_order": 120,
+    "requires": [],
+    "optional": [],
+    "js": "frontend.js",
+    "css": "style.css",
+    "author": "DSH",
+    "version": "1.36.11",
+    "homePage": "",
+    "auto_update": false
+}

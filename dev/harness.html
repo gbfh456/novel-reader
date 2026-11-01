@@ -1,0 +1,1550 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>小说阅读器 - 开发测试台</title>
+    <link rel="stylesheet" href="../style.css?v=3">
+    <style>
+        html, body {
+            margin: 0;
+            min-height: 100%;
+            background: #17181c;
+            color: #dcdcd2;
+            font-family: system-ui, -apple-system, "Segoe UI", "Noto Sans SC", sans-serif;
+        }
+        body { padding: 18px 20px 40px; }
+        :root {
+            --SmartThemeBodyColor: rgb(220, 220, 210);
+            --SmartThemeEmColor: rgb(145, 145, 145);
+            --SmartThemeQuoteColor: rgb(225, 138, 36);
+            --SmartThemeBlurTintColor: rgba(23, 23, 23, 1);
+            --SmartThemeBorderColor: rgba(255, 255, 255, 0.14);
+            --SmartThemeShadowColor: rgba(0, 0, 0, 0.5);
+        }
+        h1 { font-size: 18px; margin: 0 0 6px; }
+        p.hint { margin: 0 0 14px; color: #9a9a92; font-size: 12.5px; line-height: 1.7; }
+        .bar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+        .bar button {
+            border: 1px solid rgba(255,255,255,.16);
+            background: rgba(255,255,255,.05);
+            color: inherit;
+            border-radius: 8px;
+            padding: 7px 12px;
+            cursor: pointer;
+            font-size: 13px;
+        }
+        .bar button:hover { background: rgba(225,138,36,.18); border-color: rgba(225,138,36,.5); }
+        pre {
+            margin: 0;
+            padding: 12px 14px;
+            background: #0f1013;
+            border: 1px solid rgba(255,255,255,.1);
+            border-radius: 10px;
+            font-size: 12px;
+            line-height: 1.6;
+            white-space: pre-wrap;
+            max-height: 45vh;
+            overflow: auto;
+        }
+        #log { color: #9a9a92; }
+    </style>
+</head>
+<body>
+    <h1>小说阅读器 · 开发测试台</h1>
+    <p class="hint">
+        这个页面不依赖酒馆本体，使用 mock 的 <code>SillyTavern.getContext()</code> 跑完整的
+        导入 → 阅读 → 备忘录 → 总结流程。默认会自动导入一本 12 章的示例小说并打开面板。
+        访问路径：<code>/scripts/extensions/third-party/novel-reader/dev/harness.html</code>
+    </p>
+
+    <div class="bar">
+        <button id="load-sample">载入示例小说</button>
+        <button id="load-epub">生成 EPUB 并导入</button>
+        <button id="load-gbk">生成 GBK TXT 并导入</button>
+        <button id="run-all">一键总结整本（mock）</button>
+        <button id="run-worldbook">一键生成世界书（mock）</button>
+        <button id="open-panel">打开面板</button>
+        <button id="test-read">测试读取第 1 章</button>
+        <button id="test-yield">测试 yieldToUI</button>
+        <button id="load-long">导入超长章节</button>
+        <button id="fail-one">切换“某段失败”模拟</button>
+        <button id="fail-organize">切换“AI 整理失败”模拟</button>
+        <button id="clear-all">清空数据</button>
+    </div>
+
+    <pre id="status">初始化中…</pre>
+    <pre id="log"></pre>
+
+    <script type="module">
+        const STORAGE_KEY = 'novel-reader-harness-settings';
+        const calls = [];
+        const logLines = [];
+
+        function log(message) {
+            const time = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+            logLines.push(`[${time}] ${message}`);
+            if (logLines.length > 200) logLines.shift();
+            document.querySelector('#log').textContent = logLines.join('\n');
+        }
+
+        function loadSettings() {
+            try {
+                return JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
+            } catch {
+                return {};
+            }
+        }
+
+        const extensionSettings = {
+            disabledExtensions: [],
+            connectionManager: { profiles: [] },
+            novelReader: loadSettings(),
+        };
+
+        const SENTENCES = [
+            '雨点砸在旧港的铁皮棚上，发出密集的鼓点声。',
+            '林默把湿透的围巾往上拉了拉，沿着码头走向那盏忽明忽暗的灯。',
+            '灯下站着一个穿灰色风衣的女人，她没有打伞，手里捏着一封被雨水洇开的信。',
+            '“你迟到了十分钟。”她说，声音比海风更冷。',
+            '林默没有解释，只是把从仓库里带出来的铜钥匙放在两人之间的木箱上。',
+            '女人盯着钥匙看了很久，忽然笑了一下，说这把钥匙开的不是门，而是一段被抹掉的历史。',
+            '远处传来汽笛，一艘没有编号的货轮正在缓慢靠岸。',
+            '他们躲进废弃的售票厅，墙上的旧时刻表还停留在十二年前。',
+            '林默注意到时刻表背面有一行铅笔字，写着一个他熟悉又陌生的名字。',
+            '女人告诉他，那场大火之后，港口所有档案都被重写过一次。',
+            '“所以你现在有两个选择，”她把信递过来，“继续查，或者假装今晚什么都没发生。”',
+            '林默接过信，纸页上只有一句话：雾散之前，不要相信任何自称知情的人。',
+            '他把信折好放进口袋，听见楼上有脚步声，一下一下，很慢。',
+            '女人熄了灯，黑暗里只剩雨声和两个人的呼吸。',
+            '当门被推开时，外面站着的却是林默以为早已离开这座城市的旧友。',
+            '旧友浑身湿透，眼神却异常清醒，他说自己一直在等林默找到这把钥匙。',
+            '三个人在售票厅里对峙，谁也没有先开口。',
+            '最后是远处货轮的汽笛打破了沉默，像某种迟到的判决。',
+        ];
+
+        function makeText(targetChars) {
+            let text = '';
+            let index = 0;
+            while (text.length < targetChars) {
+                text += SENTENCES[index % SENTENCES.length];
+                index++;
+                if (index % 4 === 0) text += '\n\n';
+            }
+            return text;
+        }
+
+        function makeSampleNovel() {
+            const titles = [
+                '雨夜来客', '旧港的钥匙', '十二年前的大火', '时刻表背面', '没有编号的货轮',
+                '自称知情的人', '雾中的旧友', '售票厅对峙', '被重写的档案', '第三把钥匙',
+                '汽笛响起之前', '雾散之后',
+            ];
+            let text = '';
+            titles.forEach((title, index) => {
+                text += `第${index + 1}章 ${title}\n\n`;
+                text += makeText(1200 + (index % 3) * 300);
+                text += '\n\n';
+            });
+            return text;
+        }
+
+        function parseRequestedChars(prompt) {
+            const text = String(prompt || '');
+            const patterns = [
+                /约\s*(\d+)\s*字/,
+                /不超过\s*(\d+)\s*字/,
+                /上限[】\]]?\s*(\d+)\s*字/,
+                /控制在\s*(\d+)\s*字/,
+            ];
+            for (const pattern of patterns) {
+                const match = text.match(pattern);
+                if (match) return Number(match[1]);
+            }
+            return 300;
+        }
+
+        let failGroup = false;
+        let failOrganize = false;
+        const worldInfoNames = [];
+        const savedWorldInfo = {};
+        const mockCharacters = [];
+
+        /** mock 的两份酒馆预设：切换后文风格式应当跟着变 */
+        const MOCK_PRESETS = {
+            '测试预设·狐策文风': {
+                prompts: [
+                    { identifier: 'main', name: '核心设定', role: 'system', content: '你是《{{char}}》的续写写手。' },
+                    {
+                        identifier: 'mock-style',
+                        name: '📝文风|自定义🔧',
+                        role: 'system',
+                        content: '{{setvar::wenfeng::\n\n## 视角\n- 贴着主角的身体写。\n- 不在场的信息不提前出现。\n\n## 分段与句长\n- 一段一到两句；能一句成段就一句成段。\n- 紧张时断开，安静时放长。\n\n}}',
+                    },
+                    { identifier: 'mock-slot', name: '🎨文风自定义位（留白）', role: 'user', content: '<文风位>\n\n</文风位>' },
+                    { identifier: 'jailbreak', name: '最终提醒', role: 'system', content: '只写故事。' },
+                ],
+                order: [
+                    { identifier: 'main', enabled: true },
+                    { identifier: 'mock-style', enabled: true },
+                    { identifier: 'mock-slot', enabled: false },
+                    { identifier: 'jailbreak', enabled: true },
+                ],
+            },
+            '测试预设·无文风': {
+                prompts: [
+                    { identifier: 'main', name: '核心设定', role: 'system', content: '你是一名小说续写引擎。' },
+                    { identifier: 'jailbreak', name: '最终提醒', role: 'system', content: '只写故事。' },
+                ],
+                order: [
+                    { identifier: 'main', enabled: true },
+                    { identifier: 'jailbreak', enabled: true },
+                ],
+            },
+            '测试预设·轻小说': {
+                prompts: [
+                    { identifier: 'main', name: '核心设定', role: 'system', content: '你是轻小说写手。' },
+                    {
+                        identifier: 'mock-style2',
+                        name: '📖 轻小说（文风）',
+                        role: 'user',
+                        content: '<writing_style>\n- 像日本轻小说家一样创作。\n- 大量创作主角的内心戏。\n- 对白口语化，多感叹词。\n- 严肃性总被消解，不把故事压得太黑。\n</writing_style>',
+                    },
+                    { identifier: 'jailbreak2', name: '最终提醒', role: 'system', content: '只写故事。' },
+                ],
+                order: [
+                    { identifier: 'main', enabled: true },
+                    { identifier: 'mock-style2', enabled: true },
+                    { identifier: 'jailbreak2', enabled: true },
+                ],
+            },
+        };
+        const mockPresetNames = Object.keys(MOCK_PRESETS);
+        const listeners = new Map();
+        const eventTypes = {
+            OAI_PRESET_CHANGED_AFTER: 'oai_preset_changed_after',
+            PRESET_CHANGED: 'preset_changed',
+            CHATCOMPLETION_SOURCE_CHANGED: 'chatcompletion_source_changed',
+        };
+        const context = {
+            maxContext: 8192,
+            mainApi: 'openai',
+            extensionSettings,
+            chatCompletionSettings: {
+                openai_max_tokens: 300,
+                preset_settings_openai: '测试预设·狐策文风',
+                chat_completion_source: 'openai',
+                prompts: MOCK_PRESETS['测试预设·狐策文风'].prompts,
+                prompt_order: [{ character_id: 100001, order: MOCK_PRESETS['测试预设·狐策文风'].order }],
+            },
+            eventSource: {
+                on: (name, fn) => {
+                    if (!listeners.has(name)) listeners.set(name, new Set());
+                    listeners.get(name).add(fn);
+                },
+                removeListener: (name, fn) => {
+                    listeners.get(name)?.delete(fn);
+                },
+                emit: (name, payload) => {
+                    for (const fn of [...(listeners.get(name) || [])]) fn(payload);
+                },
+            },
+            eventTypes,
+            saveSettingsDebounced() {
+                localStorage.setItem(STORAGE_KEY, JSON.stringify(extensionSettings.novelReader || {}));
+            },
+            generateRaw: async ({ prompt, systemPrompt, responseLength }) => {
+                const promptText = typeof prompt === 'string' ? prompt : (prompt || []).map(message => message.content).join('\n');
+                const effectiveResponseLength = responseLength ?? context.chatCompletionSettings?.openai_max_tokens;
+                if (failGroup && promptText.includes('【位置】第 2 /')) {
+                    throw new Error('HTTP 500 模拟分段失败');
+                }
+                if (failOrganize && String(systemPrompt || '').includes('世界书条目的整理编辑')) {
+                    throw new Error('HTTP 500 模拟整理失败');
+                }
+                if (promptText.includes('【提取分类与重点】')) {
+                    const label = promptText.match(/【本段位置】([^\n]+)/)?.[1] || `第${calls.length + 1}块`;
+                    const name = label.replace(/[「」【】]/g, '').slice(0, 30);
+                    const output = JSON.stringify({
+                        角色: {
+                            [name]: {
+                                关键词: [name, '测试角色'],
+                                内容: `## 身份\n${label} 的主要人物。\n## 性格\n冷静、谨慎。\n## 关系\n与旧港事件有关。`,
+                            },
+                        },
+                        地点: {
+                            旧港: {
+                                关键词: ['旧港', '码头'],
+                                内容: '## 概况\n一座常年被雾笼罩的港口。\n## 关联事件\n十二年前的火灾。',
+                            },
+                        },
+                    });
+                    calls.push({ worldbook: true, label, responseLength: effectiveResponseLength });
+                    log(`mock 世界书：${label}，max_tokens=${effectiveResponseLength}`);
+                    return output;
+                }
+                if (promptText.includes('【排版要求】')) {
+                    const headingMatch = promptText.match(/2\. 小节标题：(.+?)——/);
+                    const headings = headingMatch
+                        ? headingMatch[1].split('｜').map(item => item.trim()).filter(Boolean)
+                        : [];
+                    const bulletMark = promptText.match(/3\. 条目符号：每行以「(.+?)」开头/)?.[1] || '-';
+                    const targetChars = Number(promptText.match(/5\. 篇幅：约 (\d+) 字/)?.[1] || 300);
+                    const lines = [];
+                    for (const heading of headings) {
+                        lines.push(heading, `${bulletMark} 贴着身体与感官写。`, `${bulletMark} 句子跟着呼吸断开。`, '');
+                    }
+                    if (!lines.length) {
+                        lines.push(`${bulletMark} 贴着身体与感官写。`, `${bulletMark} 句子跟着呼吸断开。`);
+                    }
+                    let output = lines.join('\n');
+                    while (output.length < targetChars * 0.8) {
+                        output += `\n${bulletMark} 再补一条：情绪写手和呼吸，不写情绪名。`;
+                    }
+                    calls.push({ style: true, chars: output.length, targetChars, responseLength: effectiveResponseLength });
+                    log(`mock 文风：${output.length} 字（目标约 ${targetChars} 字），${headings.length} 个小节`);
+                    return output;
+                }
+                const requested = parseRequestedChars(promptText);
+                const target = Math.max(80, Math.min(requested, 4000));
+                const output = makeText(target).slice(0, target);
+                const probe = `${systemPrompt || ''}\n${promptText}`;
+                calls.push({
+                    requested: target,
+                    responseLength,
+                    chars: output.length,
+                    extraInPrompt: probe.includes('重点写主角'),
+                    systemHasStyle: probe.includes('剧情主线'),
+                });
+                log(`mock 生成 ${output.length} 字（请求 ${target} 字，max_tokens=${responseLength}）`);
+                return output;
+            },
+            ConnectionManagerRequestService: {
+                getSupportedProfiles: () => [],
+                sendRequest: async () => '',
+            },
+            name1: '旅人',
+            characters: mockCharacters,
+            convertCharacterBook: book => ({
+                entries: Object.fromEntries((book?.entries || []).map((entry, index) => [index, entry])),
+            }),
+            getRequestHeaders: () => ({ 'Content-Type': 'application/json' }),
+            getCharacters: async () => mockCharacters,
+            getPresetManager: () => ({
+                getSelectedPresetName: () => context.chatCompletionSettings.preset_settings_openai,
+                getPresetList: () => ({
+                    presets: mockPresetNames.map(name => ({
+                        name,
+                        prompts: MOCK_PRESETS[name].prompts,
+                        prompt_order: [{ character_id: 100001, order: MOCK_PRESETS[name].order }],
+                    })),
+                    preset_names: Object.fromEntries(mockPresetNames.map((name, index) => [name, index])),
+                }),
+                getCompletionPresetByName: name => (MOCK_PRESETS[name]
+                    ? {
+                        name,
+                        prompts: MOCK_PRESETS[name].prompts,
+                        prompt_order: [{ character_id: 100001, order: MOCK_PRESETS[name].order }],
+                    }
+                    : undefined),
+                updateList: () => {},
+            }),
+            getWorldInfoNames: () => [...worldInfoNames],
+            saveWorldInfo: async (name, data) => {
+                if (!worldInfoNames.includes(name)) worldInfoNames.push(name);
+                savedWorldInfo[name] = data;
+                log(`saveWorldInfo: ${name}，${Object.keys(data.entries || {}).length} 条`);
+            },
+            updateWorldInfoList: async () => {},
+            reloadWorldInfoEditor: async () => {},
+            callGenericPopup: async () => 1,
+            POPUP_TYPE: { CONFIRM: 2 },
+            POPUP_RESULT: { AFFIRMATIVE: 1 },
+            stopGeneration() {
+                log('stopGeneration() 被调用');
+            },
+        };
+
+        window.SillyTavern = { getContext: () => context };
+
+        /* ------------------------------------------------------------------
+           网络找书的 mock 站点：搜索结果 → 目录页 → 章节页
+           全部走酒馆的 /api/search/visit，测试台上不需要真的联网
+           ------------------------------------------------------------------ */
+        const MOCK_ONLINE_HOST = 'https://mock-novel.test';
+        const MOCK_ONLINE_CHAPTERS = 8;
+
+        function mockOnlineChapterHtml(index) {
+            const paragraphs = Array.from({ length: 6 }, (_, i) =>
+                `<p>第 ${index} 章的第 ${i + 1} 段正文，用来验证网络抓取、段落切分与阅读排版。</p>`).join('\n');
+            return `<!DOCTYPE html><html><head><meta charset="utf-8">
+<title>第${index}章 雾里的钥匙_雾港小说网</title></head><body>
+<div class="bookname"><h1>第${index}章 雾里的钥匙</h1></div>
+<div id="content">${paragraphs}<p>上一章</p><p>下一章</p><p>请记住本站域名 www.mock-novel.test</p></div>
+</body></html>`;
+        }
+
+        function mockOnlineBookHtml() {
+            const items = Array.from({ length: MOCK_ONLINE_CHAPTERS }, (_, i) => {
+                const index = i + 1;
+                return `<dd><a href="/book/1024/${10000 + index}.html">第${index}章 雾里的钥匙</a></dd>`;
+            }).join('\n');
+            return `<!DOCTYPE html><html><head><meta charset="utf-8">
+<title>雾港测试_最新章节_雾港小说网</title>
+<meta property="og:novel:book_name" content="雾港测试">
+<meta property="og:novel:author" content="测试作者">
+<meta name="description" content="这是一本用于测试网络找书流程的样例小说。">
+</head><body>
+<div class="book-info"><p>作者：测试作者</p></div>
+<div id="list"><dl>${items}</dl></div>
+</body></html>`;
+        }
+
+        /** 搜索页：每页 10 条，第一条是能真正打开的 mock 书；first=N 时返回另一组 */
+        function mockOnlineSearchHtml(first = 1) {
+            const start = Math.max(1, Number(first) || 1);
+            const items = [];
+            for (let i = 0; i < 10; i++) {
+                const index = start + i;
+                const href = index === 1
+                    ? `${MOCK_ONLINE_HOST}/book/1024/`
+                    : `https://example.org/book/${index}`;
+                items.push(`<li class="b_algo"><h2><a href="${href}">雾港测试 第${index}条 小说在线阅读</a></h2>
+<div class="b_caption"><p>雾港小说网 · 第 ${index} 条</p></div></li>`);
+            }
+            return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>雾港 小说 - Bing</title></head><body>
+<ol id="b_results">${items.join('\n')}</ol></body></html>`;
+        }
+
+        /* 书源自检用的 mock 站点：搜索结果页 + 已有的书籍页 / 章节页 */
+        const MOCK_SOURCE = {
+            name: '雾港书源',
+            url: MOCK_ONLINE_HOST,
+            search: {
+                url: '/s?q={key}&page={page}',
+                list: '.result',
+                title: 'h3 a',
+                link: 'h3 a@href',
+                author: '.author',
+                intro: '.intro',
+            },
+            book: { tocList: '#list dd', chapterTitle: 'a', chapterUrl: 'a@href' },
+            chapter: { content: '#content' },
+        };
+
+        function mockSourceSearchHtml() {
+            const rows = [1, 2, 3].map(index => `<div class="result">
+<h3><a href="${MOCK_ONLINE_HOST}/book/1024/">雾港测试 第${index}条</a></h3>
+<span class="author">测试作者</span>
+<p class="intro">书源 mock 搜索的第 ${index} 条结果</p>
+</div>`).join('\n');
+            return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>站内搜索</title></head>
+<body><div id="results">${rows}</div></body></html>`;
+        }
+
+        function mockOnlineVisit(url) {
+            const target = String(url || '');
+            if (target.includes('/s?q=')) return mockSourceSearchHtml();
+            if (target.includes('bing.com')) {
+                const first = target.match(/[?&]first=(\d+)/)?.[1] || '1';
+                return mockOnlineSearchHtml(Number(first));
+            }
+            const chapter = target.match(/\/book\/1024\/(\d+)\.html/);
+            if (chapter) return mockOnlineChapterHtml((Number(chapter[1]) % 100) || 1);
+            if (target.includes('/book/1024')) return mockOnlineBookHtml();
+            return '<!DOCTYPE html><html><body><p>没有内容</p></body></html>';
+        }
+
+        /* ------------------------------------------------------------------
+           番茄小说（本地下载器）的 mock：假装桥接插件 + 下载器都在跑
+           ------------------------------------------------------------------ */
+        const MOCK_FANQIE = {
+            bookId: '7510094191217609753',
+            title: '雾港番茄书',
+            author: '番茄测试作者',
+            chapters: 3,
+        };
+        let mockFanqieJobPolls = 0;
+
+        function mockFanqieBookText() {
+            const rows = [];
+            for (let index = 1; index <= MOCK_FANQIE.chapters; index++) {
+                rows.push([
+                    `第${index}章 雾里的第${index}盏灯`,
+                    `第 ${index} 章的第一段正文，用来验证番茄整本 txt 的分章。`,
+                    `第 ${index} 章的第二段正文。`,
+                ].join('\n'));
+            }
+            return [
+                `书名：${MOCK_FANQIE.title}`,
+                `作者：${MOCK_FANQIE.author}`,
+                `book_id=${MOCK_FANQIE.bookId}`,
+                '状态：连载',
+                '评分：9.2',
+                '字数：123456',
+                `章节：${MOCK_FANQIE.chapters}`,
+                '分类：玄幻',
+                '标签：玄幻|系统',
+                '在读：1.2万人在读',
+                '',
+                '简介：',
+                '这是番茄 mock 书的简介。',
+                '',
+                rows.join('\n\n'),
+                '',
+            ].join('\n');
+        }
+
+        function mockFanqieJson(payload, status = 200) {
+            return new Response(JSON.stringify(payload), {
+                status,
+                headers: { 'Content-Type': 'application/json' },
+            });
+        }
+
+        async function mockFanqieBridge(url, options = {}) {
+            // ?nobridge=1 时模拟「桥接没装」：酒馆会回一个 HTML 404 页
+            if (new URLSearchParams(location.search).get('nobridge') === '1') {
+                return new Response('<html><body>404 Not Found</body></html>', {
+                    status: 404,
+                    headers: { 'Content-Type': 'text/html' },
+                });
+            }
+            const path = String(url).split('/api/plugins/fanqie-bridge')[1] || '';
+            const method = String(options.method || 'GET').toUpperCase();
+            if (path.startsWith('/health')) {
+                return mockFanqieJson({
+                    ok: true,
+                    version: 'mock',
+                    upstream: 'http://127.0.0.1:18423',
+                    managed: true,
+                    autostart: true,
+                    dataDir: '/sillytavern/data/fanqie-bridge',
+                    serverRoot: '/sillytavern',
+                    extensionDir: '/sillytavern/public/scripts/extensions/third-party/novel-reader',
+                    downloader: { version: 'mock-2.4.16', saveDir: '/mock', locked: false, reachable: true },
+                    // 和真桥接保持同一份契约，面板上的安装/卸载命令才会出来
+                    paths: {
+                        installServer: '/sillytavern/public/scripts/extensions/third-party/novel-reader/install-server.sh',
+                        uninstall: '/sillytavern/public/scripts/extensions/third-party/novel-reader/uninstall.sh',
+                        setup: '/sillytavern/public/scripts/extensions/third-party/novel-reader/setup.mjs',
+                    },
+                    commands: {
+                        installServer: 'bash "/sillytavern/public/scripts/extensions/third-party/novel-reader/install-server.sh" "/sillytavern"',
+                        uninstall: 'bash "/sillytavern/public/scripts/extensions/third-party/novel-reader/uninstall.sh" "/sillytavern"',
+                    },
+                });
+            }
+            if (path.startsWith('/search')) {
+                log(`mock 番茄搜索：${decodeURIComponent(String(path.split('q=')[1] || ''))}`);
+                return mockFanqieJson({
+                    items: [{
+                        book_id: MOCK_FANQIE.bookId,
+                        title: MOCK_FANQIE.title,
+                        author: MOCK_FANQIE.author,
+                        raw: { category: '玄幻', word_number: 123456, score: 9.2, read_cnt_text: '1.2万人在读' },
+                    }],
+                });
+            }
+            if (path.startsWith('/preview/')) {
+                return mockFanqieJson({
+                    book_id: MOCK_FANQIE.bookId,
+                    book_name: MOCK_FANQIE.title,
+                    author: MOCK_FANQIE.author,
+                    description: '这是番茄 mock 书的简介。',
+                    chapter_count: MOCK_FANQIE.chapters,
+                    word_count: 123456,
+                    score: 9.2,
+                    read_count_text: '1.2万人在读',
+                    finished: false,
+                    tags: ['玄幻', '系统'],
+                    category: '玄幻',
+                    first_chapter_title: '第1章 雾里的第1盏灯',
+                    last_chapter_title: `第${MOCK_FANQIE.chapters}章 雾里的第${MOCK_FANQIE.chapters}盏灯`,
+                });
+            }
+            if (path.includes('/cancel')) {
+                log('mock 番茄取消任务');
+                return mockFanqieJson({ ok: true });
+            }
+            if (path.startsWith('/jobs')) {
+                if (method === 'POST') {
+                    mockFanqieJobPolls = 0;
+                    log('mock 番茄建任务');
+                    return mockFanqieJson({ id: 1, book_id: MOCK_FANQIE.bookId, state: 'queued' });
+                }
+                mockFanqieJobPolls += 1;
+                const done = mockFanqieJobPolls >= 2;
+                return mockFanqieJson({
+                    items: [{
+                        id: 1,
+                        book_id: MOCK_FANQIE.bookId,
+                        title: MOCK_FANQIE.title,
+                        state: done ? 'done' : 'running',
+                        progress: {
+                            saved_chapters: done ? MOCK_FANQIE.chapters : 1,
+                            chapter_total: MOCK_FANQIE.chapters,
+                            save_phase: 'TextSave',
+                        },
+                    }],
+                });
+            }
+            if (path.startsWith('/book-text')) {
+                return new Response(mockFanqieBookText(), {
+                    status: 200,
+                    headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+                });
+            }
+            return mockFanqieJson({ ok: false, error: `mock 没实现 ${path}` }, 404);
+        }
+
+        // 「导入到酒馆」会走酒馆的角色卡导入接口，这里用内存数据模拟，
+        // 方便在测试台上验证重名改名共存。
+        const originalFetch = window.fetch.bind(window);
+        window.fetch = async (url, options = {}) => {
+            const target = String(url);
+            if (target.includes('/api/plugins/fanqie-bridge')) {
+                return mockFanqieBridge(target, options);
+            }
+            if (target.includes('/api/search/visit')) {
+                let payload = {};
+                try {
+                    payload = JSON.parse(options.body || '{}');
+                } catch (error) {
+                    payload = {};
+                }
+                const visited = String(payload.url || '');
+                log(`mock 网页通道：${visited}`);
+                if (visited.includes('broken.test')) return new Response('', { status: 500 });
+                if (visited.includes('slow.test')) await new Promise(resolve => setTimeout(resolve, 600));
+                return new Response(mockOnlineVisit(visited), {
+                    status: 200,
+                    headers: { 'Content-Type': 'text/html; charset=utf-8' },
+                });
+            }
+            if (target.includes('/api/characters/import')) {
+                const file = options.body?.get?.('avatar');
+                const name = String(file?.name || 'character').replace(/\.json$/i, '') || 'character';
+                const avatar = `${name}.png`;
+                mockCharacters.push({ name, avatar, data: { extensions: { world: 'mock' } } });
+                log(`mock 导入角色卡：${name}`);
+                return new Response(JSON.stringify({ file_name: name }), {
+                    status: 200,
+                    headers: { 'Content-Type': 'application/json' },
+                });
+            }
+            return originalFetch(url, options);
+        };
+
+        window.toastr = {
+            success: message => log(`success: ${message}`),
+            info: message => log(`info: ${message}`),
+            warning: message => log(`warning: ${message}`),
+            error: message => log(`error: ${message}`),
+        };
+
+        await import('../frontend.js');
+
+        function waitForApi() {
+            return new Promise((resolve, reject) => {
+                const start = Date.now();
+                const timer = setInterval(() => {
+                    if (window.NovelReader) {
+                        clearInterval(timer);
+                        resolve(window.NovelReader);
+                    } else if (Date.now() - start > 8000) {
+                        clearInterval(timer);
+                        reject(new Error('NovelReader 初始化超时'));
+                    }
+                }, 50);
+            });
+        }
+
+        const api = await waitForApi();
+
+        async function makeEpubFile() {
+            await import('/lib/jszip.min.js');
+            const zip = new JSZip();
+            zip.file('mimetype', 'application/epub+zip', { compression: 'STORE' });
+            zip.file('META-INF/container.xml', `<?xml version="1.0" encoding="UTF-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles>
+</container>`);
+            const chapters = [
+                ['第一章 雾港的清晨', '清晨的雾还没有散，码头上的灯一盏接一盏地熄灭。'],
+                ['第二章 没有名字的船', '那艘船停在最外侧的泊位，船身上没有编号，也没有旗。'],
+                ['第三章 灯塔守夜人', '守夜人说，十二年前也有人问过同样的问题。'],
+            ];
+            const manifest = chapters.map((_, index) => `    <item id="ch${index + 1}" href="ch${index + 1}.xhtml" media-type="application/xhtml+xml"/>`).join('\n');
+            const spine = chapters.map((_, index) => `    <itemref idref="ch${index + 1}"/>`).join('\n');
+            zip.file('OEBPS/content.opf', `<?xml version="1.0" encoding="UTF-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="bookid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>雾港测试书</dc:title>
+    <dc:creator>测试作者</dc:creator>
+    <dc:identifier id="bookid">test-epub-001</dc:identifier>
+  </metadata>
+  <manifest>
+${manifest}
+  </manifest>
+  <spine>
+${spine}
+  </spine>
+</package>`);
+            chapters.forEach(([title, intro], index) => {
+                zip.file(`OEBPS/ch${index + 1}.xhtml`, `<?xml version="1.0" encoding="UTF-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><head><title>${title}</title></head>
+<body><h1>${title}</h1><p>${intro}</p><p>${makeText(600)}</p></body></html>`);
+            });
+            const blob = await zip.generateAsync({ type: 'blob', mimeType: 'application/epub+zip' });
+            return new File([blob], '雾港测试书.epub', { type: 'application/epub+zip' });
+        }
+
+        document.querySelector('#load-sample').addEventListener('click', async () => {
+            await api.importText('示例小说：雾港十二夜', makeSampleNovel());
+            api.open();
+        });
+
+        document.querySelector('#load-epub').addEventListener('click', async () => {
+            const file = await makeEpubFile();
+            await api.importFile(file);
+            api.open();
+        });
+
+        document.querySelector('#load-gbk').addEventListener('click', async () => {
+            const text = makeSampleNovel().slice(0, 9000);
+            const bytes = new Uint8Array(text.length);
+            // 用 GBK 编码器不可用时，退化为 UTF-8 文件；浏览器 TextEncoder 只支持 UTF-8
+            let encoded;
+            try {
+                const response = await fetch('data:text/plain;charset=gbk,' + encodeURIComponent(text));
+                encoded = new Uint8Array(await response.arrayBuffer());
+            } catch {
+                encoded = new TextEncoder().encode(text);
+            }
+            const file = new File([encoded], 'GBK编码测试.txt', { type: 'text/plain' });
+            await api.importFile(file);
+            api.open();
+        });
+
+        document.querySelector('#run-all').addEventListener('click', async () => {
+            api.open();
+            const radio = document.querySelector('input[name="nr-scope"][value="all"]');
+            if (radio) {
+                radio.checked = true;
+                radio.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+            await api.runSummary();
+        });
+
+        document.querySelector('#run-worldbook').addEventListener('click', async () => {
+            api.open();
+            document.querySelector('.nr-tab[data-tab="worldbook"]')?.click();
+            const radio = document.querySelector('input[name="nr-wb-scope"][value="all"]');
+            if (radio) {
+                radio.checked = true;
+                radio.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+            document.querySelector('#nr-wb-run')?.click();
+        });
+
+        document.querySelector('#open-panel').addEventListener('click', () => api.open());
+
+        document.querySelector('#test-read').addEventListener('click', async () => {
+            try {
+                const { getChapterContent } = await import('../js/db.js');
+                const state = api.getState();
+                const text = await getChapterContent(state.novelId, 0);
+                log(`读取第 1 章成功：${text.length} 字`);
+            } catch (error) {
+                log(`读取失败：${error.message}`);
+            }
+        });
+
+        document.querySelector('#test-yield').addEventListener('click', async () => {
+            const { yieldToUI } = await import('../js/util.js');
+            const start = performance.now();
+            await yieldToUI();
+            log(`yieldToUI 用时 ${(performance.now() - start).toFixed(1)} ms`);
+        });
+
+        document.querySelector('#load-long').addEventListener('click', async () => {
+            const text = '第1章 很长的章节\n\n' + makeText(12000);
+            await api.importText('超长章节测试', text);
+            api.open();
+        });
+
+        document.querySelector('#fail-one').addEventListener('click', () => {
+            failGroup = !failGroup;
+            log(`“第 2 段失败”模拟已${failGroup ? '开启' : '关闭'}`);
+        });
+
+        document.querySelector('#fail-organize').addEventListener('click', () => {
+            failOrganize = !failOrganize;
+            log(`“AI 整理失败”模拟已${failOrganize ? '开启' : '关闭'}`);
+        });
+
+        document.querySelector('#clear-all').addEventListener('click', async () => {
+            await api.clearAll();
+            location.reload();
+        });
+
+        setInterval(() => {
+            try {
+                const state = api.getState();
+                const summaryForStatus = state.summary.result && typeof state.summary.result.text === 'string'
+                    ? {
+                        ...state.summary.result,
+                        text: state.summary.result.text.slice(0, 120)
+                            + (state.summary.result.text.length > 120 ? '…' : ''),
+                    }
+                    : null;
+                const status = {
+                    ...state,
+                    ...(summaryForStatus
+                        ? { summary: { ...state.summary, result: summaryForStatus } }
+                        : {}),
+                    calls: calls.length,
+                    lastCall: calls[calls.length - 1] || null,
+                    savedWorldInfo: Object.fromEntries(Object.entries(savedWorldInfo).map(([key, value]) => [key, Object.keys(value.entries || {}).length])),
+                };
+                document.querySelector('#status').textContent = JSON.stringify(status, null, 2);
+            } catch (error) {
+                document.querySelector('#status').textContent = String(error);
+            }
+        }, 600);
+
+        setTimeout(async () => {
+            try {
+                if (api.getState().novels.length === 0) {
+                    await api.importText('示例小说：雾港十二夜', makeSampleNovel());
+                    log('已自动导入示例小说');
+                }
+                api.open();
+            } catch (error) {
+                log(`自动初始化失败：${error.message}`);
+            }
+        }, 500);
+
+        // 开发自检：文风页。面板里的「自检：文风页」按钮，或 URL 带 ?autotest=style
+        const runStyleAutotest = async () => {
+            const out = document.createElement('pre');
+            out.id = 'autotest-out';
+            out.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:999999;margin:0;padding:8px;background:#111;color:#7f7;font:11px/1.5 monospace;white-space:pre-wrap;max-height:46vh;overflow:auto';
+            document.body.appendChild(out);
+            const lines = [];
+            const send = (text) => { try { navigator.sendBeacon('/__log', text); } catch (error) { /* ignore */ } };
+            const say = (message) => {
+                lines.push(message);
+                out.textContent = lines.join('\n');
+                send(`${message}\n`);
+            };
+            const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+            const waitFor = async (check, timeout = 20000) => {
+                const startAt = Date.now();
+                while (Date.now() - startAt < timeout) {
+                    try {
+                        if (check()) return true;
+                    } catch (error) { /* ignore */ }
+                    await wait(150);
+                }
+                return false;
+            };
+
+            try {
+                say('phase=style');
+                await waitFor(() => api.getState().novels.length > 0);
+                api.open();
+                document.querySelector('.nr-tab[data-tab="style"]')?.click();
+                await wait(500);
+
+                const presetName = () => document.querySelector('#nr-st-preset .nr-st-preset-name')?.textContent || '';
+                const formatText = () => document.querySelector('#nr-st-format')?.textContent || '';
+                const entryText = () => document.querySelector('#nr-st-entry')?.selectedOptions?.[0]?.textContent || '';
+
+                say(`跟随预设：${presetName()}`);
+                say(`文风条目：${document.querySelectorAll('#nr-st-entry option').length} 个`);
+                say(`默认条目：${entryText()}`);
+                say(`格式含 setvar：${formatText().includes('setvar::wenfeng')}`);
+                say(`格式含小节：${formatText().includes('## 视角')}`);
+                say(`生成按钮可用：${!document.querySelector('#nr-st-run')?.disabled}`);
+
+                document.querySelector('#nr-st-run')?.click();
+                const generated = await waitFor(() => Boolean(api.getState().style?.result), 20000);
+                say(`生成完成：${generated}`);
+                const result = api.getState().style?.result;
+                say(`结果 ${result?.chars} 字，包裹保留：${String(result?.text || '').startsWith('{{setvar::wenfeng::')}，小节保留：${String(result?.text || '').includes('## 视角')}`);
+                say(`格式检查：${result?.checks?.ok}${(result?.checks?.warnings || []).length ? ` / ${result.checks.warnings.join('；')}` : ''}`);
+                say(`粘贴提示：${String(document.querySelector('#nr-st-paste')?.textContent || '').slice(0, 44)}…`);
+
+                window.__harness.switchMockPreset('测试预设·轻小说');
+                await wait(600);
+                say(`切换后预设：${presetName()}`);
+                say(`切换后条目：${entryText()}`);
+                say(`格式跟着变：${formatText().includes('writing_style') && !formatText().includes('wenfeng')}`);
+                say(`旧结果标成过期：${api.getState().style?.result?.stale === true}`);
+                say(`过期提示可见：${!document.querySelector('#nr-st-stale')?.hidden}`);
+
+                document.querySelector('#nr-st-run')?.click();
+                const regenerated = await waitFor(() => {
+                    const current = api.getState().style;
+                    return Boolean(current?.result) && current.result.presetName === '测试预设·轻小说' && !current.result.stale;
+                }, 20000);
+                const second = api.getState().style?.result;
+                say(`按新预设重生成：${regenerated}`);
+                say(`新包裹：${String(second?.text || '').startsWith('<writing_style>')}`);
+                say(`新检查：${second?.checks?.ok}`);
+
+                // 没有文风条目的预设：不应该瞎猜，提示用户手选
+                window.__harness.switchMockPreset('测试预设·无文风');
+                await wait(600);
+                say(`无文风预设：${presetName()}`);
+                say(`无文风提示：${(document.querySelector('#nr-st-entry-help')?.textContent || '').includes('没有名字带「文风」')}`);
+                say(`生成按钮禁用：${document.querySelector('#nr-st-run')?.disabled === true}`);
+                say('完成');
+            } catch (error) {
+                say(`ERROR ${error && error.message}`);
+            }
+        };
+
+        const styleTestButton = document.createElement('button');
+        styleTestButton.type = 'button';
+        styleTestButton.id = 'run-style-test';
+        styleTestButton.textContent = '自检：文风页';
+        document.querySelector('#open-panel')?.parentElement?.appendChild(styleTestButton);
+        styleTestButton.addEventListener('click', () => {
+            runStyleAutotest();
+        });
+
+        if (new URLSearchParams(location.search).get('autotest') === 'style') {
+            runStyleAutotest();
+        }
+
+        // 开发自检：总结完成后添加到备忘录。
+        async function runSummaryAutotest() {
+            const out = document.createElement('pre');
+            out.id = 'autotest-summary-out';
+            out.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:999999;margin:0;padding:8px;background:#111;color:#7f7;font:11px/1.5 monospace;white-space:pre-wrap;max-height:46vh;overflow:auto';
+            document.body.appendChild(out);
+            const lines = [];
+            const say = message => {
+                lines.push(message);
+                out.textContent = lines.join('\n');
+                try { navigator.sendBeacon('/__log', `${message}\n`); } catch (error) { /* ignore */ }
+            };
+            const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+            const waitFor = async (check, timeout = 40000) => {
+                const startAt = Date.now();
+                while (Date.now() - startAt < timeout) {
+                    try { if (check()) return true; } catch (error) { /* ignore */ }
+                    await wait(150);
+                }
+                return false;
+            };
+
+            try {
+                say('phase=summary');
+                await waitFor(() => api.getState().novels.length > 0);
+                api.open();
+                api.openTab('summary');
+                await wait(500);
+                const all = document.querySelector('input[name="nr-scope"][value="all"]');
+                if (all && !all.checked) {
+                    all.checked = true;
+                    all.dispatchEvent(new Event('change', { bubbles: true }));
+                }
+                document.querySelector('#nr-run')?.click();
+                const completed = await waitFor(() => Boolean(api.getState().summary.result?.text));
+                const result = api.getState().summary.result;
+                say(`总结完成：${completed} / ${result?.chapterIndices?.length || 0} 章`);
+                const metaOk = Boolean(result
+                    && result.novelId === api.getState().novelId
+                    && Array.isArray(result.chapterIndices)
+                    && result.chapterIndices.length === api.getState().chapters);
+                say(`章节区间元数据：${metaOk} / ${result?.scopeLabel || '(无)'}`);
+
+                const memoButton = document.querySelector('#nr-result-memo');
+                const buttonReady = await waitFor(() => Boolean(memoButton) && !memoButton.disabled);
+                say(`添加按钮：${memoButton?.textContent || '(无)'} / 可用 ${buttonReady}`);
+                memoButton?.click();
+                const range = result?.chapterIndices?.length
+                    ? `第 ${Math.min(...result.chapterIndices) + 1}～${Math.max(...result.chapterIndices) + 1} 章`
+                    : '';
+                const added = await waitFor(() => api.getMemos().some(memo => memo.novelId === result?.novelId
+                    && memo.title?.startsWith(`${range} · `)));
+                const after = api.getState().summary.result;
+                const memo = api.getMemos().find(item => item.id === after?.memoAddedId);
+                const titleOk = Boolean(memo?.title?.startsWith(`${range} · `));
+                const contentOk = Boolean(memo && memo.content === result?.text);
+                const novelOk = memo?.novelId === result?.novelId;
+                say(`已加入备忘：${added} / 标题 ${titleOk} / 正文一致 ${contentOk} / 对应小说 ${novelOk}`);
+                say(`备忘标题：${memo?.title || '(无)'}`);
+                await wait(250);
+                say(`按钮已锁定：${memoButton?.disabled === true && memoButton?.textContent === '已添加到备忘'}`);
+                api.openTab('memo');
+                await wait(300);
+                const memoTitleInTree = [...document.querySelectorAll('#nr-memo-tree .nr-memo-row-title strong')]
+                    .some(node => node.textContent === memo?.title);
+                say(`备忘树可见：${memoTitleInTree}`);
+                say('完成');
+            } catch (error) {
+                say(`ERROR ${error && error.message}`);
+            }
+        }
+
+        // 开发自检：备忘录页。覆盖分组、分组备忘、标题排序、查看/编辑、批量删除与跨小说保留。
+        async function runMemoAutotest() {
+            const out = document.createElement('pre');
+            out.id = 'autotest-memo-out';
+            out.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:999999;margin:0;padding:8px;background:#111;color:#7f7;font:11px/1.5 monospace;white-space:pre-wrap;max-height:46vh;overflow:auto';
+            document.body.appendChild(out);
+            const lines = [];
+            const say = (message) => {
+                lines.push(message);
+                out.textContent = lines.join('\n');
+                try { navigator.sendBeacon('/__log', `${message}\n`); } catch (error) { /* ignore */ }
+            };
+            const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+            const waitFor = async (check, timeout = 12000) => {
+                const startAt = Date.now();
+                while (Date.now() - startAt < timeout) {
+                    try {
+                        if (check()) return true;
+                    } catch (error) { /* ignore */ }
+                    await wait(120);
+                }
+                return false;
+            };
+            const groupNode = name => [...document.querySelectorAll('.nr-memo-tree-node[data-memo-group-id]')]
+                .find(node => node.querySelector(':scope > .nr-memo-tree-head .nr-memo-tree-label')?.textContent === name);
+
+            try {
+                say('phase=memo');
+                await waitFor(() => api.getState().novels.length > 0);
+                api.open();
+                api.openTab('memo');
+                await wait(350);
+                const initial = api.getState().memo;
+                say(`初始：本书 ${initial.novelTotal} 条 / 分组 ${initial.groupTotal} 条 / 分组数 ${initial.groups.length}`);
+
+                // 1. 创建分组
+                document.querySelector('#nr-memo-tree [data-memo-act="add-group"]')?.click();
+                await waitFor(() => document.querySelector('#nr-memo-group-name'));
+                const groupNameInput = document.querySelector('#nr-memo-group-name');
+                groupNameInput.value = '测试分组';
+                groupNameInput.dispatchEvent(new Event('input', { bubbles: true }));
+                document.querySelector('[data-memo-group-act="save"]')?.click();
+                const groupCreated = await waitFor(() => api.getState().memo.groups.some(group => group.name === '测试分组'));
+                const group = api.getState().memo.groups.find(item => item.name === '测试分组') || {};
+                const tree = document.querySelector('#nr-memo-tree');
+                const bookNode = tree?.querySelector(':scope > [data-node-key="book"]');
+                const createdGroupNode = groupNode('测试分组');
+                const parallel = Boolean(
+                    bookNode
+                    && createdGroupNode
+                    && bookNode.parentElement === tree
+                    && createdGroupNode.parentElement === tree,
+                );
+                say(`创建分组：${groupCreated} / ${group.name || '(无)'} / 与本书并列 ${parallel}`);
+
+                // 2. 在分组里点「新建」写备忘
+                const titleInput = document.querySelector('#nr-memo-title');
+                const contentInput = document.querySelector('#nr-memo-content');
+                document.querySelector('#nr-memo-new')?.click();
+                const newEditor = await waitFor(() => !document.querySelector('#nr-memo-editor')?.hidden);
+                say(`点新建进入编辑：${newEditor} / 归属分组 ${api.getState().memo.targetGroupId === group.id}`);
+                titleInput.value = '分组备忘测试';
+                titleInput.dispatchEvent(new Event('input', { bubbles: true }));
+                contentInput.value = '旧港的钥匙与十二年前的火灾有关。';
+                contentInput.dispatchEvent(new Event('input', { bubbles: true }));
+                document.querySelector('#nr-memo-save')?.click();
+                const groupMemoAdded = await waitFor(() => api.getState().memo.groupTotal === initial.groupTotal + 1);
+                say(`分组备忘保存：${groupMemoAdded} / 本书未变 ${api.getState().memo.novelTotal === initial.novelTotal}`);
+                say(`左栏标题：${document.querySelector('.nr-memo-row-title strong')?.textContent || '(空)'}`);
+
+                // 分组块可折叠 / 展开
+                groupNode('测试分组')?.querySelector('[data-memo-act="toggle-node"]')?.click();
+                await wait(150);
+                const collapsedOk = groupNode('测试分组')?.querySelector('.nr-memo-tree-toggle')?.getAttribute('aria-expanded') === 'false'
+                    && groupNode('测试分组')?.querySelectorAll('.nr-memo-row-wrap').length === 0;
+                groupNode('测试分组')?.querySelector('[data-memo-act="toggle-node"]')?.click();
+                await wait(150);
+                const expandedOk = groupNode('测试分组')?.querySelector('.nr-memo-tree-toggle')?.getAttribute('aria-expanded') === 'true'
+                    && groupNode('测试分组')?.querySelectorAll('.nr-memo-row-wrap').length > 0;
+                say(`分组折叠/展开：${collapsedOk && expandedOk}`);
+
+                // 3. 点击左下方备忘：右侧只读查看；再点「编辑」才进入编辑
+                [...document.querySelectorAll('.nr-memo-row-wrap')]
+                    .find(row => row.textContent.includes('分组备忘测试'))
+                    ?.querySelector('.nr-memo-row')?.click();
+                const viewed = await waitFor(() => {
+                    const view = document.querySelector('#nr-memo-view');
+                    const viewTitle = document.querySelector('#nr-memo-view-title');
+                    return view && !view.hidden
+                        && viewTitle?.textContent === '分组备忘测试'
+                        && document.querySelector('#nr-memo-editor')?.hidden;
+                });
+                const viewBody = document.querySelector('#nr-memo-view-body')?.textContent || '';
+                const editorHiddenBefore = document.querySelector('#nr-memo-editor')?.hidden;
+                say(`点击查看（只读）：${viewed} / 正文在右侧 ${viewBody.includes('旧港的钥匙')}`);
+                document.querySelector('#nr-memo-view-edit')?.click();
+                const editing = await waitFor(() => !document.querySelector('#nr-memo-editor')?.hidden
+                    && document.querySelector('#nr-memo-title')?.value === '分组备忘测试');
+                say(`点编辑才进入编辑：${editing} / 左键不直接编辑 ${editorHiddenBefore}`);
+                contentInput.value = '编辑后的分组备忘内容：铜钥匙和旧港档案。';
+                contentInput.dispatchEvent(new Event('input', { bubbles: true }));
+                document.querySelector('#nr-memo-save')?.click();
+                const edited = await waitFor(
+                    () => api.getMemos().some(memo => memo.groupId === group.id && memo.content.includes('编辑后的分组')),
+                    25000,
+                );
+                say(`右侧编辑：${edited} / 保存后回到只读 ${!document.querySelector('#nr-memo-view')?.hidden}`);
+
+                // 4. 标题排序 + 无标题自动取名
+                await api.addMemo({ title: 'B 标题', content: 'B 内容', groupId: group.id });
+                await api.addMemo({ title: 'A 标题', content: 'A 内容', groupId: group.id });
+                const sortSelect = document.querySelector('#nr-memo-sort');
+                sortSelect.value = 'title';
+                sortSelect.dispatchEvent(new Event('change', { bubbles: true }));
+                await wait(250);
+                const titles = [...document.querySelectorAll('.nr-memo-row-title strong')]
+                    .map(node => node.textContent || '');
+                const collator = new Intl.Collator('zh-CN', { numeric: true, sensitivity: 'base' });
+                const expectedTitles = [...titles].sort((a, b) => collator.compare(a, b));
+                const titleOrdered = titles.length > 1 && titles.every((title, index) => title === expectedTitles[index]);
+                say(`按标题排序：${titleOrdered} / ${titles.join(' | ')}`);
+                await api.addMemo({ content: '自动标题内容', groupId: group.id });
+                const autoTitled = await waitFor(() => api.getMemos().some(memo => memo.content === '自动标题内容' && memo.title === '自动标题内容'));
+                say(`无标题自动取名：${autoTitled}`);
+
+                // 5. 分组备忘不随小说切换 / 删除
+                const firstNovelId = api.getState().novelId;
+                const groupTotalBefore = api.getState().memo.groupTotal;
+                await api.importText('第二本备忘测试书', window.__harness.makeSampleNovel());
+                await wait(500);
+                say(`切换小说后分组仍在：${api.getState().memo.groupTotal === groupTotalBefore} / ${api.getState().memo.groupTotal}`);
+                const { listGroupMemos, listMemoGroups, deleteNovel, clearAll } = await import('../js/db.js');
+                await deleteNovel(firstNovelId);
+                const groupAfterDelete = await listGroupMemos();
+                const groupsAfterDelete = await listMemoGroups();
+                say(`删除小说后分组备忘仍在：${groupAfterDelete.length === groupTotalBefore} / ${groupAfterDelete.length}`);
+                say(`分组仍在：${groupsAfterDelete.some(item => item.id === group.id)}`);
+                await clearAll();
+                const groupAfterClear = await listGroupMemos();
+                const groupsAfterClear = await listMemoGroups();
+                say(`清空小说数据后分组仍在：${groupAfterClear.length === groupTotalBefore && groupsAfterClear.some(item => item.id === group.id)}`);
+
+                // 6. 批量删除
+                api.openTab('memo');
+                await wait(300);
+                document.querySelector('#nr-memo-batch')?.click();
+                await wait(150);
+                document.querySelector('#nr-memo-batch-all')?.click();
+                await wait(150);
+                const selected = api.getState().memo.batchSelection;
+                document.querySelector('#nr-memo-batch-delete')?.click();
+                const batchDeleted = await waitFor(() => api.getState().memo.groupTotal === 0);
+                say(`批量删除：${batchDeleted} / 选中 ${selected} 条 / 退出批量 ${!api.getState().memo.batchMode}`);
+
+                // 7. 分组改名与删除
+                groupNode('测试分组')?.querySelector('[data-memo-act="rename-group"]')?.click();
+                await waitFor(() => document.querySelector('#nr-memo-group-name'));
+                const renameInput = document.querySelector('#nr-memo-group-name');
+                renameInput.value = '改名后的分组';
+                renameInput.dispatchEvent(new Event('input', { bubbles: true }));
+                document.querySelector('[data-memo-group-act="save"]')?.click();
+                const renamed = await waitFor(() => api.getState().memo.groups.some(item => item.name === '改名后的分组'));
+                say(`分组改名：${renamed}`);
+                groupNode('改名后的分组')?.querySelector('[data-memo-act="delete-group"]')?.click();
+                const groupDeleted = await waitFor(() => !api.getState().memo.groups.some(item => item.id === group.id));
+                say(`删除分组：${groupDeleted}`);
+
+                // 8. 本书块按章折叠
+                await api.addMemo({ title: '本书备忘测试', content: '本书备忘内容', chapterIndex: 0, page: 0 });
+                await wait(250);
+                let treeBookNode = document.querySelector('#nr-memo-tree > [data-node-key="book"]');
+                let treeChapterNode = treeBookNode?.querySelector('.nr-memo-tree-node[data-level="1"]');
+                const bookTreeOk = Boolean(treeBookNode && treeChapterNode
+                    && [...treeBookNode.querySelectorAll('.nr-memo-row-wrap')].some(row => row.textContent.includes('本书备忘测试')));
+                treeBookNode?.querySelector('[data-memo-act="toggle-node"]')?.click();
+                await wait(150);
+                treeBookNode = document.querySelector('#nr-memo-tree > [data-node-key="book"]');
+                const bookCollapsed = Boolean(treeBookNode)
+                    && treeBookNode.querySelectorAll('.nr-memo-tree-node[data-level="1"]').length === 0;
+                treeBookNode?.querySelector('[data-memo-act="toggle-node"]')?.click();
+                await wait(150);
+                treeBookNode = document.querySelector('#nr-memo-tree > [data-node-key="book"]');
+                treeChapterNode = treeBookNode?.querySelector('.nr-memo-tree-node[data-level="1"]');
+                treeChapterNode?.querySelector('[data-memo-act="toggle-node"]')?.click();
+                await wait(150);
+                treeBookNode = document.querySelector('#nr-memo-tree > [data-node-key="book"]');
+                treeChapterNode = treeBookNode?.querySelector('.nr-memo-tree-node[data-level="1"]');
+                const chapterCollapsed = Boolean(treeChapterNode)
+                    && treeChapterNode.querySelectorAll('.nr-memo-row-wrap').length === 0;
+                treeChapterNode?.querySelector('[data-memo-act="toggle-node"]')?.click();
+                await wait(150);
+                treeBookNode = document.querySelector('#nr-memo-tree > [data-node-key="book"]');
+                const chapterExpanded = Boolean(treeBookNode)
+                    && treeBookNode.querySelectorAll('.nr-memo-row-wrap').length > 0;
+                say(`本书按章折叠：${bookTreeOk && bookCollapsed && chapterCollapsed && chapterExpanded}`);
+                say('完成');
+            } catch (error) {
+                say(`ERROR ${error && error.message}`);
+            }
+        }
+
+        const summaryTestButton = document.createElement('button');
+        summaryTestButton.type = 'button';
+        summaryTestButton.id = 'run-summary-test';
+        summaryTestButton.textContent = '自检：总结→备忘';
+        document.querySelector('#open-panel')?.parentElement?.appendChild(summaryTestButton);
+        summaryTestButton.addEventListener('click', () => {
+            runSummaryAutotest();
+        });
+
+        const memoTestButton = document.createElement('button');
+        memoTestButton.type = 'button';
+        memoTestButton.id = 'run-memo-test';
+        memoTestButton.textContent = '自检：备忘录';
+        document.querySelector('#open-panel')?.parentElement?.appendChild(memoTestButton);
+        memoTestButton.addEventListener('click', () => {
+            runMemoAutotest();
+        });
+
+        if (new URLSearchParams(location.search).get('autotest') === 'summary') {
+            runSummaryAutotest();
+        }
+
+        if (new URLSearchParams(location.search).get('autotest') === 'memo') {
+            runMemoAutotest();
+        }
+
+        /** 开发自检：网络找书。搜索 → 打开目录 → 加入书架 → 下载到书架 */
+        async function runOnlineAutotest() {
+            const out = document.createElement('pre');
+            out.id = 'autotest-online-out';
+            document.body.appendChild(out);
+            const lines = [];
+            const say = message => {
+                lines.push(message);
+                out.textContent = lines.join('\n');
+                log(message);
+            };
+            const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+            try {
+                api.open();
+                api.openTab('online');
+                api.setOnlineSettings({ searchEngine: 'source', channel: 'auto', concurrency: 4 });
+                say(`搜索通道：${document.querySelector('#nr-ol-engine')?.selectedOptions?.[0]?.textContent || '未知'}`);
+
+                const results = await api.searchOnline('雾港测试');
+                const firstPage = api.getState().online;
+                say(`搜索结果：${results.length} 条，每页 ${firstPage.pageSize} 条，共 ${firstPage.pageCount} 页`);
+                if (!results.length) throw new Error('没有搜到结果');
+                say(`第一页卡片数：${document.querySelectorAll('#nr-ol-results .nr-online-result').length}`);
+                say(`分页按钮：${document.querySelectorAll('#nr-ol-pager [data-page]').length} 个，当前页高亮 ${document.querySelector('#nr-ol-pager .nr-page-btn.is-active')?.textContent || '无'}`);
+
+                api.gotoOnlinePage(2);
+                say(`翻到第 2 页：当前第 ${api.getState().online.page} 页，卡片 ${document.querySelectorAll('#nr-ol-results .nr-online-result').length} 个`);
+                api.gotoOnlinePage(1);
+
+                api.setOnlinePageSize(10);
+                const resized = api.getState().online;
+                say(`每页改成 10 条：每页 ${resized.pageSize} 条，共 ${resized.pageCount} 页，卡片 ${document.querySelectorAll('#nr-ol-results .nr-online-result').length} 个`);
+                api.setOnlinePageSize(5);
+
+                const book = await api.openOnlineUrl(results[0].url);
+                say(`目录解析：${book?.title || '无'}，${book?.chapters || 0} 章`);
+                if (!book || book.chapters < 2) throw new Error('目录解析失败');
+                say(`详情区显示：${document.querySelector('#nr-ol-book')?.hidden ? '否' : '是'}`);
+                say(`章节预览数：${document.querySelectorAll('#nr-ol-book .nr-online-chapter').length}`);
+
+                document.querySelector('#nr-ol-book [data-act="shelf"]')?.click();
+                await wait(600);
+                const shelfBook = api.getState().novels.find(novel => novel.title === (book?.title || ''));
+                const articleText = document.querySelector('#nr-article-text')?.textContent || '';
+                say(`加入书架：《${shelfBook?.title || '未入库'}》，第一章 ${articleText.length} 字`);
+                say(`正文含 mock 文字：${articleText.includes('第 1 章的第 1 段') ? '是' : '否'}`);
+                say(`换源按钮可见：${document.querySelector('#nr-reader-change-source')?.hidden ? '否' : '是'}`);
+
+                const pagesBefore = api.getState().reader.pages;
+                await wait(150);
+                say(`第一章分页：${pagesBefore} 页`);
+
+                const meta = shelfBook;
+                say(`下载到书架：${meta ? `${meta.title} / ${meta.chapterCount} 章 / ${meta.charCount} 字` : '失败'}`);
+                if (!meta) throw new Error('下载失败');
+                say(`书架里能查到：${api.getState().novels.some(novel => novel.id === meta.id) ? '是' : '否'}`);
+                say(`当前状态：${api.getState().online.reading ? '临时阅读（未入库）' : '已在书架'}`);
+                document.title = `自检：网络找书 ${results.length} 结果 / ${book.chapters} 章`;
+            } catch (error) {
+                say(`ERROR ${error && error.message}`);
+                document.title = `自检失败：${error && error.message}`;
+            }
+        }
+
+        const onlineTestButton = document.createElement('button');
+        onlineTestButton.type = 'button';
+        onlineTestButton.id = 'run-online-test';
+        onlineTestButton.textContent = '自检：网络找书';
+        document.querySelector('#open-panel')?.parentElement?.appendChild(onlineTestButton);
+        onlineTestButton.addEventListener('click', () => {
+            runOnlineAutotest();
+        });
+
+        if (new URLSearchParams(location.search).get('autotest') === 'online') {
+            runOnlineAutotest();
+        }
+
+        /** 开发自检：书源。多源聚合搜索 → 目录 → 阅读 → 下载 → 管理弹窗 */
+        async function runSourceAutotest() {
+            const out = document.createElement('pre');
+            out.id = 'autotest-source-out';
+            document.body.appendChild(out);
+            const lines = [];
+            const say = message => {
+                lines.push(message);
+                out.textContent = lines.join('\n');
+                log(message);
+            };
+            const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+            let stopSeen = false;
+            let pageLabel = '-';
+            try {
+                api.open();
+                api.openTab('online');
+                api.setOnlineSettings({ searchEngine: 'source', channel: 'tavern', concurrency: 2 });
+                const imported = api.importSourcesJson(JSON.stringify([
+                    { ...MOCK_SOURCE, name: '雾港书源A' },
+                    { ...MOCK_SOURCE, name: '雾港书源B' },
+                    {
+                        name: '坏掉的书源',
+                        url: 'https://broken.test',
+                        search: { url: '/s?q={key}', list: '.result', title: 'h3 a', link: 'h3 a@href' },
+                        chapter: { content: '#content' },
+                    },
+                ]));
+                say(`导入书源：新增 ${imported.added} 个，覆盖 ${imported.replaced} 个，提示 ${imported.warnings.length} 条`);
+                say(`搜索按钮文案：${document.querySelector('#nr-ol-search')?.textContent}`);
+                say(`书源摘要：${document.querySelector('#nr-ol-source-summary')?.textContent}`);
+                if (document.querySelector('#nr-ol-source')) throw new Error('书源下拉框应该已经删掉');
+
+                const first = await api.searchOnline('雾港');
+                const report = api.getState().online.sourceReport || [];
+                say(`酒馆通道：${first.length} 条结果，首条来源数 ${first[0]?.sources?.length ?? 0}`);
+                say(`书源成败：${report.map(item => `${item.name}${item.error ? `（${item.error}）` : `:${item.count} 条`}`).join(' / ')}`);
+                say(`来源 chip 数：${document.querySelectorAll('#nr-ol-results .nr-source-chip').length}`);
+                say(`结果卡片数：${document.querySelectorAll('#nr-ol-results .nr-online-result').length}`);
+                say(`状态栏：${document.querySelector('#nr-ol-status')?.textContent}`);
+                if (!first.length) throw new Error('多源聚合搜索没有结果');
+                if (first[0].sources.length < 2) throw new Error('同一本书没有合并成多来源');
+                if (!report.some(item => item.error)) throw new Error('坏掉的书源没有报错');
+
+                const second = first;
+
+                // 停止按钮：加一个慢源，搜索途中点停止
+                api.importSourcesJson(JSON.stringify([{ ...MOCK_SOURCE, name: '慢速书源', url: 'https://slow.test' }]));
+                const pending = api.searchOnline('雾港');
+                let stopButton = null;
+                for (let attempt = 0; attempt < 12; attempt++) {
+                    await wait(50);
+                    if (!api.getState().online.searching) break;
+                    const candidate = document.querySelector('#nr-ol-stop');
+                    if (candidate && !candidate.hidden) {
+                        stopButton = candidate;
+                        break;
+                    }
+                }
+                stopSeen = Boolean(stopButton);
+                say(`搜索中停止按钮：${stopButton ? '可见' : '未出现（搜索可能已经结束）'}`);
+                stopButton?.click();
+                await pending;
+                say(`点停止后状态：${document.querySelector('#nr-ol-status')?.textContent || '(空)'}`);
+
+                const book = await api.openOnlineUrl(second[0].url);
+                say(`目录解析：${book?.title || '无'} · ${book?.chapters || 0} 章`);
+                if (!book || book.chapters < 2) throw new Error('书源目录解析失败');
+
+                await api.readOnline();
+                const article = document.querySelector('#nr-article-text')?.textContent || '';
+                say(`临时阅读正文 ${article.length} 字，含 mock 文字：${article.includes('第 1 章的第 1 段') ? '是' : '否'}`);
+                await wait(200);
+                const meta = await api.downloadOnline();
+                say(`下载到书架：${meta ? `${meta.title} / ${meta.chapterCount} 章` : '失败'}`);
+                if (!meta) throw new Error('书源下载失败');
+
+                api.openSourceManager();
+                const items = document.querySelectorAll('#nr-source-list .nr-source-item').length;
+                say(`书源管理：列表 ${items} 项，计数「${document.querySelector('#nr-source-count')?.textContent || ''}」`);
+                const filter = document.querySelector('#nr-source-filter');
+                if (filter) {
+                    filter.value = '坏掉';
+                    filter.dispatchEvent(new Event('input', { bubbles: true }));
+                    say(`过滤「坏掉」后：${document.querySelectorAll('#nr-source-list .nr-source-item').length} 项`);
+                    filter.value = '';
+                    filter.dispatchEvent(new Event('input', { bubbles: true }));
+                }
+
+                // 分页：灌 25 个停用源，过滤后应分两页（20 + 5）
+                api.importSourcesJson(JSON.stringify(Array.from({ length: 25 }, (_, index) => ({
+                    name: `分页源${index + 1}`,
+                    url: `https://page${index + 1}.test`,
+                    enabled: false,
+                    search: { url: '/s?q={key}', list: '.result', title: 'h3 a', link: 'h3 a@href' },
+                    chapter: { content: '#content' },
+                }))));
+                filter.value = '分页源';
+                filter.dispatchEvent(new Event('input', { bubbles: true }));
+                const pager = document.querySelector('#nr-source-pager');
+                const pageOne = document.querySelectorAll('#nr-source-list .nr-source-item').length;
+                say(`分页：第一页 ${pageOne} 项，分页条 ${pager?.hidden ? '隐藏' : '显示'}，计数「${document.querySelector('#nr-source-count')?.textContent || ''}」`);
+                [...(pager?.querySelectorAll('.nr-page-btn') || [])].find(button => button.textContent === '下一页')?.click();
+                const pageTwo = document.querySelectorAll('#nr-source-list .nr-source-item').length;
+                pageLabel = `${pageOne}/${pageTwo}`;
+                say(`分页：第二页 ${pageTwo} 项`);
+                filter.value = '';
+                filter.dispatchEvent(new Event('input', { bubbles: true }));
+                document.querySelector('#nr-source-disable-all')?.click();
+                say(`全部停用后按钮：${document.querySelector('#nr-ol-search')?.textContent}`);
+                document.querySelector('#nr-source-close')?.click();
+                say(`弹窗已关闭：${document.querySelector('#nr-dialog')?.hidden ? '是' : '否'}`);
+                document.title = `自检：书源 ${first.length} 结果 / ${first[0].sources.length} 来源 / 停止=${stopSeen ? 'ok' : 'no'} / 分页=${pageLabel}`;
+            } catch (error) {
+                const where = String(error?.stack || '').split('\n')[1]?.trim() || '';
+                say(`ERROR ${error && error.message}${where ? ` @ ${where}` : ''}`);
+                document.title = `自检失败：${error && error.message}${where ? ` @ ${where.slice(0, 80)}` : ''}`;
+            }
+        }
+
+        const sourceTestButton = document.createElement('button');
+        sourceTestButton.type = 'button';
+        sourceTestButton.id = 'run-source-test';
+        sourceTestButton.textContent = '自检：书源';
+        document.querySelector('#open-panel')?.parentElement?.appendChild(sourceTestButton);
+        sourceTestButton.addEventListener('click', () => {
+            runSourceAutotest();
+        });
+
+        if (new URLSearchParams(location.search).get('autotest') === 'source') {
+            runSourceAutotest();
+        }
+
+        /** 开发自检：番茄小说。搜索 → 书目 → 建任务 → 轮询 → 取回 txt → 切章入库 */
+        async function runFanqieAutotest() {
+            const out = document.createElement('pre');
+            out.id = 'autotest-fanqie-out';
+            document.body.appendChild(out);
+            const lines = [];
+            const say = message => {
+                lines.push(message);
+                out.textContent = lines.join('\n');
+                log(message);
+            };
+            try {
+                api.open();
+                api.openTab('online');
+                api.setOnlineSettings({ searchEngine: 'fanqie', fanqieBridge: '/api/plugins/fanqie-bridge', downloadLimit: 0 });
+                const results = await api.searchOnline('雾港');
+                say(`番茄搜索：${results.length} 条 · ${results[0]?.title} · ${results[0]?.site} · ${results[0]?.url}`);
+                say(`网页搜索控件已移除：${document.querySelector('#nr-ol-web-engine') ? '否' : '是'}`);
+                if (!results.length) throw new Error('番茄搜索没有结果');
+
+                const book = await api.openOnlineUrl(results[0].url);
+                const card = api.getState().online.book;
+                say(`书目：${book?.title || '无'} · 章数 ${card?.chapterCount} · 只能整本下载 ${card?.downloadOnly}`);
+                const actions = [...document.querySelectorAll('#nr-ol-book [data-act]')]
+                    .map(button => `${button.dataset.act}:${button.textContent.trim()}`);
+                say(`卡片按钮：${actions.join(' / ')}`);
+                say(`标签数：${document.querySelectorAll('#nr-ol-book .nr-online-book-tags .nr-badge').length}`);
+
+                const meta = await api.downloadFanqie();
+                if (!meta) throw new Error('番茄下载没有返回书目');
+                say(`入库：${meta.title} / ${meta.chapterCount} 章 / ${meta.charCount} 字`);
+                say(`书架里能查到：${api.getState().novels.some(novel => novel.id === meta.id) ? '是' : '否'}`);
+                say(`阅读页章节数：${api.getState().chapters}`);
+                const article = document.querySelector('#nr-article-text')?.textContent || '';
+                say(`正文含 mock 文字：${article.includes('第一段正文') ? '是' : '否'}`);
+                document.title = `自检：番茄 ${results.length} 结果 / ${meta.chapterCount} 章入库`;
+            } catch (error) {
+                const where = String(error?.stack || '').split('\n')[1]?.trim() || '';
+                const statusText = document.querySelector('#nr-ol-status')?.textContent || '';
+                say(`ERROR ${error && error.message}${where ? ` @ ${where}` : ''}`);
+                say(`当时状态栏：${statusText || '(空)'}`);
+                document.title = `自检失败：${error && error.message} | ${statusText}`;
+            }
+        }
+
+        const fanqieTestButton = document.createElement('button');
+        fanqieTestButton.type = 'button';
+        fanqieTestButton.id = 'run-fanqie-test';
+        fanqieTestButton.textContent = '自检：番茄小说';
+        document.querySelector('#open-panel')?.parentElement?.appendChild(fanqieTestButton);
+        fanqieTestButton.addEventListener('click', () => {
+            runFanqieAutotest();
+        });
+
+        if (new URLSearchParams(location.search).get('autotest') === 'fanqie') {
+            runFanqieAutotest();
+        }
+
+        // 开发自检：「导入到酒馆」会依次写世界书、导入角色卡。
+        // 面板被弹窗盖住时用鼠标点不到结果区的按钮，这里用程序化点击跑一遍。
+        async function runImportTavernAutotest() {
+            api.open();
+            document.querySelector('.nr-tab[data-tab="worldbook"]')?.click();
+            const readyAt = Date.now();
+            while (Date.now() - readyAt < 8000) {
+                const result = document.querySelector('#nr-wb-result');
+                if (result && !result.hidden) break;
+                await new Promise(resolve => setTimeout(resolve, 200));
+            }
+            log('自检：触发「导入到酒馆」×2（第二次应改名共存）');
+            document.title = '自检：已触发导入，等待结果';
+            const snapshot = () => [
+                Object.keys(savedWorldInfo).slice(-1)[0] || '无',
+                mockCharacters.slice(-1)[0]?.name || '无',
+            ].join(' / ');
+            document.querySelector('#nr-wb-import-tavern')?.click();
+            await new Promise(resolve => setTimeout(resolve, 5000));
+            const first = snapshot();
+            document.querySelector('#nr-wb-import-tavern')?.click();
+            await new Promise(resolve => setTimeout(resolve, 5000));
+            const second = snapshot();
+            const summary = `自检 第一次:${first} ｜ 第二次:${second}`;
+            log(summary);
+            document.title = summary;
+        }
+
+        if (new URLSearchParams(location.search).get('autotest') === 'import-tavern') {
+            runImportTavernAutotest().catch(error => log(`自检失败：${error && error.message}`));
+        }
+
+        /** 模拟酒馆里换预设：写入新预设并发出两个切换事件 */
+        function switchMockPreset(name) {
+            const preset = MOCK_PRESETS[name];
+            if (!preset) return false;
+            context.chatCompletionSettings.prompts = preset.prompts;
+            context.chatCompletionSettings.prompt_order = [{ character_id: 100001, order: preset.order }];
+            context.chatCompletionSettings.preset_settings_openai = name;
+            context.eventSource.emit(eventTypes.OAI_PRESET_CHANGED_AFTER);
+            context.eventSource.emit(eventTypes.PRESET_CHANGED, { apiId: 'openai', name });
+            log(`mock 切换预设：${name}`);
+            return true;
+        }
+
+        window.__harness = {
+            makeSampleNovel,
+            makeEpubFile,
+            calls,
+            api,
+            savedWorldInfo,
+            mockCharacters,
+            switchMockPreset,
+            get presetNames() {
+                return [...mockPresetNames];
+            },
+        };
+    </script>
+</body>
+</html>
